@@ -40,54 +40,86 @@ wiki_cats_processing = set(['Category:香港'])
 wiki_cats_processed = set()
 
 def process_category(category):
-  if category in wiki_cats_processed:
-    return
-  categories = get_wiki_category(category)
-  if len(categories) == 0:
-    return
-  wiki_cats_processed.update([category])
-  wiki_cats_processing.update(categories)
+    if category in wiki_cats_processed:
+        return
+    categories = get_wiki_category(category)
+    if len(categories) == 0:
+        return
+    wiki_cats_processed.update([category])
+    wiki_cats_processing.update(categories)
+
+# Get initial count for display purposes
+initial_count = len(wiki_cats_processing)
+print(f"Starting with {initial_count} categories to process")
+
+# Create a progress bar
+pbar = tqdm(total=initial_count, desc="Processing categories")
+processed_count = 0
 
 while len(wiki_cats_processing) > 0:
-  process_category(wiki_cats_processing.pop())
+    # Process a category
+    category = wiki_cats_processing.pop()
+    process_category(category)
+
+    # Update progress count
+    processed_count += 1
+
+    # If we've found more categories than we started with, update the total
+    current_total = processed_count + len(wiki_cats_processing)
+    if current_total > pbar.total:
+        pbar.total = current_total
+
+    # Update the progress bar
+    pbar.update(1)
+    pbar.set_postfix({"Remaining": len(wiki_cats_processing), "Total found": len(wiki_cats_processed)})
+
+# Close the progress bar when done
+pbar.close()
+
+print(f"Processed {processed_count} categories, found {len(wiki_cats_processed)} unique categories")
 
 with open('hk_categories.txt', 'w') as fOut:
-  fOut.write('\n'.join(wiki_cats_processed))
+    fOut.write('\n'.join(wiki_cats_processed))
 
 hk_titles = set()
 
-for category in tqdm(wiki_cats_processed):
-  titles = get_wiki_titles_by_category(category)
-  hk_titles.update(titles)
+for category in tqdm(wiki_cats_processed, desc="Getting titles by category"):
+    titles = get_wiki_titles_by_category(category)
+    hk_titles.update(titles)
 
-print(len(hk_titles))
+print(f"Found {len(hk_titles)} titles")
 
 with open('notebooks/cantonese/wikipedia/hk_titles.txt', 'w') as fOut:
-  fOut.write('\n'.join([f'{title[0]}\t{title[1]}' for title in hk_titles]))
+    fOut.write('\n'.join([f'{title[0]}\t{title[1]}' for title in hk_titles]))
 
 hk_articles = []
 
 with multiprocessing.Pool(8) as pool:
-  for articles in tqdm(pool.imap(get_wiki_article, hk_titles), total=len(hk_titles)):
-    hk_articles.append(articles)
+    for articles in tqdm(pool.imap(get_wiki_article, [title[0] for title in hk_titles]),
+                         total=len(hk_titles),
+                         desc="Fetching articles"):
+        hk_articles.append(articles)
 
 print(clean_unused_text(hk_articles[13]))
 
-df = pd.DataFrame({'text': [clean_unused_text(a) for a in hk_articles], 'title': list(hk_titles) })
+df = pd.DataFrame({'text': [clean_unused_text(a) for a in hk_articles],
+                   'title': [title[0] for title in hk_titles],
+                   'category': [title[1] for title in hk_titles]})
 
-for title in tqdm(df[df['text'].isna()]['title']):
-  index = df[df['title'] == title].index[0]
-  article = get_wiki_article(title)
-  if article:
-    df.at[index, 'text'] = article
+print("Checking for missing content...")
+for title in tqdm(df[df['text'].isna()]['title'], desc="Retrying failed titles"):
+    index = df[df['title'] == title].index[0]
+    article = get_wiki_article(title)
+    if article:
+        df.at[index, 'text'] = article
 
 missed_contents_index = df[df['text'].isna()]['title'].index
+print(f"Dropping {len(missed_contents_index)} titles with missing content")
 df.drop(missed_contents_index, inplace=True)
 
-title_to_cats = {title: re.sub(r'^Category:', '', category) for title, category in hk_titles}
-df['category'] = df['title'].apply(lambda x: title_to_cats[x])
-
+# Title to category mapping is now built directly in the DataFrame creation
 df.drop_duplicates(subset=['title', 'text'], inplace=True)
+print(f"Final dataset size: {len(df)} articles")
 
 df.to_csv('notebooks/cantonese/wikipedia/hk_articles.csv', index=False)
-print(df)
+print(df.head())
